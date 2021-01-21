@@ -1,0 +1,17 @@
+[package]
+name = "graphql-ws"
+version = "0.1.0"
+authors = ["Brendan Molloy <brendan@bbqsrc.net>"]
+edition = "2018"
+
+[dependencies]
+tungstenite = "0.12"
+tokio-tungstenite = { version = "0.13", features = ["tls"] }
+tokio = { version = "1", features = ["io-util"], default-features = false }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+futures-util = { version = "0.3" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+env_logger = "*"
