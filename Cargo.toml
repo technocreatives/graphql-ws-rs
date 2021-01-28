@@ -17,3 +17,5 @@ async-stream = "*"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 env_logger = "*"
+tracing-subscriber = { version = "*", features = ["fmt"] }
+chrono = { version = "0.4", features = ["serde"] }

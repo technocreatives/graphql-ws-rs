@@ -23,7 +23,7 @@ pub struct Payload<T = serde_json::Value, E = serde_json::Value> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub errors: Option<Vec<E>>,
+    pub errors: Option<E>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,7 +83,7 @@ impl ServerMessage {
 
 impl From<ClientMessage> for protocol::Message {
     fn from(message: ClientMessage) -> Self {
-        dbg!(Message::Text(serde_json::to_string(&message).unwrap()))
+        Message::Text(serde_json::to_string(&message).unwrap())
     }
 }
 
@@ -100,7 +100,7 @@ impl TryFrom<protocol::Message> for ServerMessage {
     fn try_from(value: protocol::Message) -> Result<Self, MessageError> {
         match value {
             Message::Text(value) => {
-                dbg!(serde_json::from_str(&value).map_err(|e| MessageError::Decoding(e)))
+                serde_json::from_str(&value).map_err(|e| MessageError::Decoding(e))
             }
             _ => Err(MessageError::InvalidMessage(value)),
         }
@@ -137,13 +137,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     pub fn stream(self) -> impl Stream<Item = Result<ServerMessage, MessageError>> {
-        StreamExt::map(self.stream, |x| match dbg!(x) {
-            Ok(msg) => ServerMessage::try_from(msg),
-            Err(e) => Err(MessageError::WebSocket(e)),
+        StreamExt::map(self.stream, |x| {
+            tracing::trace!("{:?}", &x);
+
+            match x {
+                Ok(msg) => ServerMessage::try_from(msg),
+                Err(e) => Err(MessageError::WebSocket(e)),
+            }
         })
     }
-
-    // pub fn into_inner(self) -> SplitStream<WebSocketStream<S, T>> {
-    //     self.stream
-    // }
 }
