@@ -1,152 +1,193 @@
-use std::convert::TryFrom;
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use futures_util::{SinkExt, StreamExt, pin_mut};
-use futures_util::{
-    stream::{SplitSink, SplitStream, Stream},
-};
-use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_tungstenite::{tungstenite::protocol, WebSocketStream};
+use async_stream::stream;
+use futures_util::{sink::Sink, stream::Stream, StreamExt};
+use raw::{ClientMessage, ClientPayload, GraphQLReceiver, GraphQLSender, Payload, ServerMessage};
+use serde::{de::DeserializeOwned, Serialize};
+use tokio::{io::{AsyncRead, AsyncWrite}, sync::{RwLock, broadcast, oneshot}};
+
+pub mod raw;
+
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 pub use tungstenite::handshake::client::Request;
 use tungstenite::Message;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename = "camelCase")]
-pub struct ClientPayload {
-    pub query: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variables: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub operation_name: Option<String>,
+pub struct GraphQLWebSocket {
+    tx: broadcast::Sender<ClientMessage>,
+    server_tx: broadcast::Sender<ServerMessage>,
+    server_rx: broadcast::Receiver<ServerMessage>,
+    id_count: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename = "camelCase")]
-pub struct Payload {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub errors: Option<Vec<serde_json::Value>>,
-}
+impl GraphQLWebSocket {
+    pub async fn connect(request: Request) -> Result<GraphQLWebSocket, tungstenite::Error> {
+        let (stream, _) = match connect_async(request).await {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
+        let (
+            sink,
+            stream
+        ) = StreamExt::split(stream);
 
-pub enum ClientMessage {
-    #[serde(rename = "connection_init")]
-    ConnectionInit {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        payload: Option<serde_json::Value>
-    },
+        let (tx_in, rx_in) = broadcast::channel(16);
 
-    #[serde(rename = "start")]
-    Start { id: String, payload: ClientPayload },
+        let tx_in0 = tx_in.clone();
+        tokio::spawn(async move {
+            let rx = GraphQLReceiver { stream };
+            let mut stream = rx.stream();
+            while let Some(msg) = stream.next().await {
+                match msg {
+                    Ok(ServerMessage::ConnectionKeepAlive) => {},
+                    Ok(v) => {
+                        let _ = tx_in0.send(v);
+                    }
+                    Err(e) => tracing::error!("{:?}", e),
+                }
+            }
+        });
 
-    #[serde(rename = "stop")]
-    Stop { id: String },
+        let (tx_out, mut rx_out) = broadcast::channel(16);
+        tokio::spawn(async move {
+            let mut tx = GraphQLSender { sink };
+            while let Ok(msg) = rx_out.recv().await {
+                match tx.send(msg).await {
+                    Ok(()) => {},
+                    Err(e) => tracing::error!("{:?}", e),
+                }
+            }
+        });
 
-    #[serde(rename = "connection_terminate")]
-    ConnectionTerminate,
-}
+        let socket = GraphQLWebSocket {
+            tx: tx_out,
+            server_tx: tx_in,
+            server_rx: rx_in,
+            id_count: 0,
+        };
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum ServerMessage {
-    #[serde(rename = "error")]
-    ConnectionError {
-        payload: serde_json::Value,
-    },
+        Ok(socket)
+    }
 
-    #[serde(rename = "connection_ack")]
-    ConnectionAck,
+    pub fn subscribe<T: DeserializeOwned + Unpin>(
+        &mut self,
+        payload: ClientPayload,
+    ) -> GraphQLSubscription<T> {
+        self.id_count += 1;
+        let id = self.id_count.to_string();
 
-    #[serde(rename = "data")]
-    Data {
-        id: String,
-        payload: Payload,
-    },
+        let sub = GraphQLSubscription::<T>::new(
+            id,
+            self.tx.clone(),
+            self.server_tx.subscribe(),
+            payload,
+        );
 
-    #[serde(rename = "error")]
-    Error {
-        id: String,
-        payload: serde_json::Value,
-    },
+        // let mut rx = self.tx.subscribe();
 
-    #[serde(rename = "complete")]
-    Complete {
-        id: String,
-    },
+        // let id = id0.clone();
+        // let stream = stream! {
+        //     while let Ok(msg) = rx.recv().await {
+        //         if let Some(msg_id) = msg.id() {
+        //             if id == msg_id {
+        //                 yield msg
+        //             }
+        //         }
+        //     }
+        // };
 
-    #[serde(rename = "ka")]
-    ConnectionKeepAlive,
-}
+        // self.gql_tx
+        //     .send(ClientMessage::Start { id: id0, payload })
+        //     .await
+        //     .unwrap();
 
-impl From<ClientMessage> for protocol::Message {
-    fn from(message: ClientMessage) -> Self {
-        dbg!(Message::Text(serde_json::to_string(&message).unwrap()))
+        // stream
+
+        sub
     }
 }
 
-#[derive(Debug)]
-pub enum MessageError {
-    Decoding(serde_json::Error),
-    InvalidMessage(protocol::Message),
-    WebSocket(tungstenite::Error),
+pub struct GraphQLSubscription<T: DeserializeOwned> {
+    id: String,
+    tx: broadcast::Sender<ClientMessage>,
+    rx: broadcast::Receiver<ServerMessage>,
+    payload: ClientPayload,
+    ty: PhantomData<T>,
 }
 
-impl TryFrom<protocol::Message> for ServerMessage {
-    type Error = MessageError;
+pub enum SubscriptionError {
+    InvalidData(Payload),
+    InternalError(serde_json::Value),
+}
 
-    fn try_from(value: protocol::Message) -> Result<Self, MessageError> {
-        match value {
-            Message::Text(value) => {
-                dbg!(serde_json::from_str(&value).map_err(|e| MessageError::Decoding(e)))
+impl<T> GraphQLSubscription<T> where T: DeserializeOwned + Unpin {
+    pub fn new(id: String, tx: broadcast::Sender<ClientMessage>, rx: broadcast::Receiver<ServerMessage>, payload: ClientPayload) -> Self {
+        Self {
+            id,
+            tx,
+            rx,
+            payload,
+            ty: PhantomData,
+        }
+    }
+
+    // pub fn stream(self) -> impl Stream<Item = Result<Payload<T>, SubscriptionError>> {
+    //     stream! {
+    //         let mut s = self.raw_stream();
+    //         while let Some(result) = StreamExt::next(&mut s).await {
+    //             match result {
+    //                 Ok(v) => { todo!(); }
+    //                 Err(e) => { yield Err(SubscriptionError::InternalError(e)) }
+    //             }
+    //         }
+    //     }
+    // }
+
+    // Payload has data and errors, need to return a Result type for this.
+    // Result<Result<T, Vec<Error>>, Error>
+
+    pub fn raw_stream(self) -> impl Stream<Item = Result<Payload, serde_json::Value>> {
+        let mut this = self;
+
+        stream! {
+            this.tx.send(ClientMessage::Start {
+                id: this.id.clone(),
+                payload: this.payload.clone(),
+            }).unwrap();
+
+            while let Ok(msg) = this.rx.recv().await {
+                match msg {
+                    ServerMessage::Data { id, payload } => {
+                        if id == this.id {
+                            yield Ok(payload);
+                        }
+                    }
+                    ServerMessage::Complete { id } => {
+                        if id == this.id {
+                            return;
+                        }
+                    }
+                    ServerMessage::ConnectionError { payload } => {
+                        yield Err(payload);
+                        return;
+                    }
+                    ServerMessage::Error { id, payload } => {
+                        if id == this.id {
+                            yield Err(payload);
+                        }
+                    }
+                    ServerMessage::ConnectionAck => {}
+                    ServerMessage::ConnectionKeepAlive => {}
+                }
             }
-            _ => Err(MessageError::InvalidMessage(value)),
         }
     }
 }
 
-pub struct GraphQLSender<S> {
-    sink: SplitSink<WebSocketStream<S>, Message>,
-}
-
-impl<S: AsyncRead + AsyncWrite + Unpin> GraphQLSender<S> {
-    pub async fn send(&mut self, message: ClientMessage) -> Result<(), tungstenite::Error> {
-        let sink = &mut self.sink;
-        pin_mut!(sink);
-        sink.send(message.into()).await
+impl<T> Drop for GraphQLSubscription<T> where T: DeserializeOwned {
+    fn drop(&mut self) {
+        self.tx
+            .send(ClientMessage::Stop { id: self.id.clone() })
+            .unwrap_or(0);
     }
-}
-
-pub struct GraphQLReceiver<S> {
-    stream: SplitStream<WebSocketStream<S>>,
-}
-
-impl<S: AsyncRead + AsyncWrite + Unpin> GraphQLReceiver<S> {
-    pub fn stream(self) -> impl Stream<Item = Result<ServerMessage, MessageError>> {
-        self.stream.map(|x| {
-            match dbg!(x) {
-                Ok(msg) => ServerMessage::try_from(msg),
-                Err(e) => Err(MessageError::WebSocket(e)),
-            }
-        })
-    }
-
-    pub fn into_inner(self) -> SplitStream<WebSocketStream<S>> {
-        self.stream
-    }
-}
-
-pub fn split<S>(stream: WebSocketStream<S>) -> (GraphQLSender<S>, GraphQLReceiver<S>)
-where
-    WebSocketStream<S>: Stream,
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let (
-        sink,
-        stream
-    ) = stream.split();
-
-    (GraphQLSender { sink }, GraphQLReceiver { stream })
 }

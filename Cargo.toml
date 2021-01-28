@@ -7,10 +7,12 @@ edition = "2018"
 [dependencies]
 tungstenite = "0.12"
 tokio-tungstenite = { version = "0.13", features = ["tls"] }
-tokio = { version = "1", features = ["io-util"], default-features = false }
+tokio = { version = "1", features = ["io-util", "sync"], default-features = false }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 futures-util = { version = "0.3" }
+tracing = "*"
+async-stream = "*"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
