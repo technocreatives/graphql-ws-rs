@@ -139,8 +139,8 @@ where
                             let raw_data = payload.data.unwrap_or(serde_json::Value::Null);
                             let raw_errors = payload.errors.unwrap_or(serde_json::Value::Null);
 
-                            let data: Option<T> = serde_json::from_value(raw_data).unwrap();
-                            let errors: Option<E> = serde_json::from_value(raw_errors).unwrap();
+                            let data: Option<T> = serde_json::from_value(raw_data).unwrap_or(None);
+                            let errors: Option<E> = serde_json::from_value(raw_errors).unwrap_or(None);
 
                             yield Ok(Payload { data, errors });
                         }
