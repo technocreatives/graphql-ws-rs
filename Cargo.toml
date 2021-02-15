@@ -13,6 +13,8 @@ serde = { version = "1", features = ["derive"] }
 futures-util = { version = "0.3" }
 tracing = "*"
 async-stream = "*"
+# Trick it to be vendored.
+openssl-sys = { version = "*", features = ["vendored"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
