@@ -127,16 +127,16 @@ where
 
 pub struct GraphQLReceiver<S>
 where
-    S: AsyncRead + Unpin,
+    S: AsyncRead + Unpin + Send,
 {
     pub(crate) stream: SplitStream<WebSocketStream<MaybeTlsStream<S>>>,
 }
 
 impl<S> GraphQLReceiver<S>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    pub fn stream(self) -> impl Stream<Item = Result<ServerMessage, MessageError>> {
+    pub fn stream(self) -> impl Stream<Item = Result<ServerMessage, MessageError>> + Send {
         StreamExt::map(self.stream, |x| {
             tracing::trace!("{:?}", &x);
 

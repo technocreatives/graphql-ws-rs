@@ -71,7 +71,7 @@ impl GraphQLWebSocket {
         Ok(socket)
     }
 
-    pub fn subscribe<T: DeserializeOwned + Unpin + 'static>(
+    pub fn subscribe<T: DeserializeOwned + Unpin + Send + 'static>(
         &mut self,
         payload: ClientPayload,
     ) -> GraphQLSubscription<T> {
@@ -104,8 +104,8 @@ pub enum SubscriptionError {
 
 impl<T, E> GraphQLSubscription<T, E>
 where
-    T: DeserializeOwned + Unpin + 'static,
-    E: DeserializeOwned + Unpin + 'static,
+    T: DeserializeOwned + Unpin + Send + 'static,
+    E: DeserializeOwned + Unpin + Send + 'static,
 {
     pub fn new(
         id: String,
@@ -123,7 +123,7 @@ where
         }
     }
 
-    pub fn stream(self) -> Pin<Box<dyn Stream<Item = Result<Payload<T, E>, serde_json::Value>>>> {
+    pub fn stream(self) -> Pin<Box<dyn Stream<Item = Result<Payload<T, E>, serde_json::Value>> + Send>> {
         let mut this = self;
 
         Box::pin(stream! {
