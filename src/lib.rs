@@ -123,7 +123,9 @@ where
         }
     }
 
-    pub fn stream(self) -> Pin<Box<dyn Stream<Item = Result<Payload<T, E>, serde_json::Value>> + Send>> {
+    pub fn stream(
+        self,
+    ) -> Pin<Box<dyn Stream<Item = Result<Payload<T, E>, serde_json::Value>> + Send>> {
         let mut this = self;
 
         Box::pin(stream! {
