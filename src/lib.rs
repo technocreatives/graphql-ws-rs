@@ -10,6 +10,7 @@ use tokio_tungstenite::{connect_async, tungstenite};
 pub mod raw;
 
 pub use tungstenite::handshake::client::Request;
+pub use tungstenite::Error;
 
 pub struct GraphQLWebSocket {
     tx: broadcast::Sender<ClientMessage>,
