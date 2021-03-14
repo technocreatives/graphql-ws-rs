@@ -5,7 +5,6 @@ authors = ["Brendan Molloy <brendan@bbqsrc.net>"]
 edition = "2018"
 
 [dependencies]
-tungstenite = "0.12"
 tokio-tungstenite = { version = "0.13", features = ["tls"] }
 tokio = { version = "1", features = ["io-util", "sync"], default-features = false }
 serde_json = "1"

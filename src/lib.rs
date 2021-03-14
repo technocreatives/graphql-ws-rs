@@ -5,7 +5,7 @@ use futures_util::{stream::Stream, StreamExt};
 use raw::{ClientMessage, ClientPayload, GraphQLReceiver, GraphQLSender, Payload, ServerMessage};
 use serde::de::DeserializeOwned;
 use tokio::sync::broadcast;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{connect_async, tungstenite};
 
 pub mod raw;
 

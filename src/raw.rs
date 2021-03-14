@@ -4,8 +4,9 @@ use futures_util::stream::{SplitSink, SplitStream, Stream};
 use futures_util::{pin_mut, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_tungstenite::{tungstenite::protocol, MaybeTlsStream, WebSocketStream};
-use tungstenite::Message;
+use tokio_tungstenite::{
+    tungstenite::protocol, tungstenite::Message, MaybeTlsStream, WebSocketStream,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename = "camelCase")]
@@ -91,7 +92,7 @@ impl From<ClientMessage> for protocol::Message {
 pub enum MessageError {
     Decoding(serde_json::Error),
     InvalidMessage(protocol::Message),
-    WebSocket(tungstenite::Error),
+    WebSocket(tokio_tungstenite::tungstenite::Error),
 }
 
 impl TryFrom<protocol::Message> for ServerMessage {
@@ -118,7 +119,10 @@ impl<S> GraphQLSender<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    pub async fn send(&mut self, message: ClientMessage) -> Result<(), tungstenite::Error> {
+    pub async fn send(
+        &mut self,
+        message: ClientMessage,
+    ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
         let sink = &mut self.sink;
         pin_mut!(sink);
         SinkExt::send(&mut sink, message.into()).await
