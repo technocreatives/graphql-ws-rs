@@ -4,7 +4,7 @@ use async_stream::stream;
 use futures_util::{stream::Stream, StreamExt};
 use raw::{ClientMessage, ClientPayload, GraphQLReceiver, GraphQLSender, Payload, ServerMessage};
 use serde::de::DeserializeOwned;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::{connect_async, tungstenite};
 
 pub mod raw;
@@ -124,18 +124,20 @@ where
         }
     }
 
-    pub fn stream(
-        self,
-    ) -> Pin<Box<dyn Stream<Item = Result<Payload<T, E>, serde_json::Value>> + Send>> {
+    fn spawn_task(self) -> mpsc::Receiver<Result<Payload<T, E>, serde_json::Value>> {
         let mut this = self;
+        let id = this.id.clone();
+        let payload = this.payload.clone();
+        let (tx, rx) = mpsc::channel(16);
 
-        Box::pin(stream! {
-            this.tx.send(ClientMessage::Start {
-                id: this.id.clone(),
-                payload: this.payload.clone(),
-            }).unwrap();
+        tokio::spawn(async move {
+            tracing::trace!("Sending start message");
+            this.tx.send(ClientMessage::Start { id, payload }).unwrap();
+
+            tracing::trace!("Sent!");
 
             while let Ok(msg) = this.rx.recv().await {
+                tracing::trace!("{:?}", &msg);
                 match msg {
                     ServerMessage::Data { id, payload } => {
                         if id == this.id {
@@ -143,9 +145,10 @@ where
                             let raw_errors = payload.errors.unwrap_or(serde_json::Value::Null);
 
                             let data: Option<T> = serde_json::from_value(raw_data).unwrap_or(None);
-                            let errors: Option<E> = serde_json::from_value(raw_errors).unwrap_or(None);
+                            let errors: Option<E> =
+                                serde_json::from_value(raw_errors).unwrap_or(None);
 
-                            yield Ok(Payload { data, errors });
+                            let _ = tx.send(Ok(Payload { data, errors })).await;
                         }
                     }
                     ServerMessage::Complete { id } => {
@@ -154,17 +157,36 @@ where
                         }
                     }
                     ServerMessage::ConnectionError { payload } => {
-                        yield Err(payload);
+                        let _ = tx.send(Err(payload)).await;
+
                         return;
                     }
                     ServerMessage::Error { id, payload } => {
                         if id == this.id {
-                            yield Err(payload);
+                            let _ = tx.send(Err(payload)).await;
                         }
                     }
                     ServerMessage::ConnectionAck => {}
                     ServerMessage::ConnectionKeepAlive => {}
                 }
+            }
+        });
+
+        // Box::pin(stream! {
+        // }
+        // })
+        rx
+    }
+
+    pub fn stream(
+        self,
+    ) -> Pin<Box<dyn Stream<Item = Result<Payload<T, E>, serde_json::Value>> + Send>> {
+        let this = self;
+        Box::pin(stream! {
+            let mut rx = this.spawn_task();
+
+            while let Some(msg) = rx.recv().await {
+                yield msg;
             }
         })
     }
@@ -176,6 +198,7 @@ where
     E: DeserializeOwned,
 {
     fn drop(&mut self) {
+        tracing::trace!("Dropping WebSocket subscription (stopping)...");
         self.tx
             .send(ClientMessage::Stop {
                 id: self.id.clone(),
@@ -186,6 +209,7 @@ where
 
 impl Drop for GraphQLWebSocket {
     fn drop(&mut self) {
+        tracing::trace!("Dropping WebSocket connection (terminating)...");
         self.tx
             .send(ClientMessage::ConnectionTerminate)
             .unwrap_or(0);
